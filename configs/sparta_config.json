@@ -1,0 +1,22 @@
+{
+    "DATASET_CONFIG": {
+        "DATASET_DIR": "dataset",
+        "FLOW_CASE": "duct_flow",
+        "SIMULATION_CASE": "AR1_180",
+        "BASELINE_SST_DIR": "kOmegaSST",
+        "DNS_DIR": "DNS_KTH"
+    },
+    "OUTPUT_CONFIG": {
+        "OUTPUT_DIR": "output"
+    },
+    "MODEL_CONFIG": {
+        "MODEL_NAME": "sparta",
+        "MODEL_DIR": "models",
+        "MODEL_FILE": "sparta_model.pth"
+    },
+    "TRAIN_CONFIG": {
+        "BATCH_SIZE": 32,
+        "EPOCHS": 100,
+        "LEARNING_RATE": 0.001
+    }
+}
