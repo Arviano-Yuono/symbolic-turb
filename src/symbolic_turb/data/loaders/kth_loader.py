@@ -4,7 +4,7 @@ from typing import Tuple
 
 import numpy as np
 
-from src.core import (
+from symbolic_turb.core import (
     FlowData,
     compute_anisotropy,
     compute_basis_tensor,
@@ -28,7 +28,7 @@ class KTHLoader(BaseLoader):
 
         https://www.mech.kth.se/~rvinuesa/DuctData/index.html
 
-        Or run the download script provided in "src/utils/download_dns.py"
+        Or run the download script provided in "symbolic_turb/utils/download_dns.py"
 
     Args:
         data_path (str): Path to the DNS data directory.
@@ -81,7 +81,6 @@ class KTHLoader(BaseLoader):
             Sij=self.flow_data.Sij, Wij=self.flow_data.Wij, omega=self.flow_data.omega
         )
         # ==============================================================================================================
-    
 
         return self.flow_data
 

@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from src.core import FlowData
+from symbolic_turb.core import FlowData
 
 
 class BaseLoader(ABC):

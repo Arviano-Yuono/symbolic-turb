@@ -1,13 +1,11 @@
 import os.path as osp
 from pathlib import Path
-from turtle import Pen
 from typing import Tuple
 
 import numpy as np
 import pandas as pd
-from pandas.util.version import PrePostDevType
 
-from src.core import FlowData
+from symbolic_turb.core import FlowData
 
 from ..base_loader import BaseLoader
 from ..preprocess import Preprocessor
@@ -37,7 +35,7 @@ class RANSLoader(BaseLoader):
 
     Note:
         The Baseline k-omega SST RANS data from openFOAM simulation must be formatted to csv first
-        using the script provided in the "src/utils/load_sst.py"
+        using the script provided in the "symbolic_turb/utils/load_sst.py"
 
     Args:
         data_path (str): Path to the DNS data directory.
@@ -58,7 +56,7 @@ class RANSLoader(BaseLoader):
 
     def format(self) -> FlowData:
         """Format the RANS DNS data for the FlowData object"""
-        self.df = pd.read_csv(osp.join(self.data_path, f"surface.csv"))
+        self.df = pd.read_csv(osp.join(self.data_path, "surface.csv"))
 
         (
             self.flow_data.x_vec,

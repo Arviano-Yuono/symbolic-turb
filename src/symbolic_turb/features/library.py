@@ -29,7 +29,7 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from src.core import FlowData
+from symbolic_turb.core import FlowData
 
 
 @dataclass(frozen=True)
@@ -177,6 +177,6 @@ class CandidateLibrary:
 
     def get_feature_name(self, idx: int) -> str:
         return self.feature_names[idx].name
-    
+
     def __len__(self):
         return len(self.feature_names)

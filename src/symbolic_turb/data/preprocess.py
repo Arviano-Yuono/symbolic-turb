@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.interpolate import griddata
 
-from src.core import FlowData
+from symbolic_turb.core import FlowData
 
 
 class Preprocessor:
