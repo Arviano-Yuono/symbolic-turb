@@ -6,7 +6,8 @@ DATASET.md
 walkthrough.md
 *.ipynb
 dataset
-customOpenFOAM
+.pytest_cache
+lnInclude
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
