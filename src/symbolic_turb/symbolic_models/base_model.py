@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 import numpy as np
-
+from typing import List
 
 class BaseRegressionModel(ABC):
     """
@@ -19,6 +19,6 @@ class BaseRegressionModel(ABC):
         pass
 
     @abstractmethod
-    def get_expression(self) -> str:
+    def get_expression(self, features: List[str]) -> str:
         """Return string of math expression from the model"""
         pass

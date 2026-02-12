@@ -2,7 +2,7 @@ import numpy as np
 import sklearn.linear_model as lm
 
 from .base_model import BaseRegressionModel
-
+from typing import List
 
 class SparseRegressionModel(BaseRegressionModel):
     """
@@ -50,5 +50,13 @@ class SparseRegressionModel(BaseRegressionModel):
         y_hat = self.model.predict(X)
         return y_hat
 
-    def get_expression(self) -> str:
-        return super().get_expression()
+    def get_expression(self, features: List[str]) -> str:
+        expression = ""
+        for i in range(len(features)):
+            if self.model.coef_[i] == 0:
+                continue
+            if expression == "":
+                expression += f"({self.model.coef_[i]}*{features[i]})"
+            else:
+                expression += f"+({self.model.coef_[i]}*{features[i]})"
+        return expression

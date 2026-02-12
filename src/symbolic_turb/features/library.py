@@ -178,5 +178,8 @@ class CandidateLibrary:
     def get_feature_name(self, idx: int) -> str:
         return self.feature_names[idx].name
 
+    def get_features(self) -> List[str]:
+        return [self.get_feature_name(idx) for idx in range(len(self))]
+
     def __len__(self):
         return len(self.feature_names)
