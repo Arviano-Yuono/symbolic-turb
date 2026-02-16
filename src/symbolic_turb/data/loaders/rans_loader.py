@@ -54,7 +54,7 @@ class RANSLoader(BaseLoader):
             -1
         ]  # takin the sim config, ex: "1_80" from "AR_1_180"
 
-    def format(self) -> FlowData:
+    def load(self) -> FlowData:
         """Format the RANS DNS data for the FlowData object"""
         self.df = pd.read_csv(osp.join(self.data_path, "surface.csv"))
 
@@ -66,11 +66,13 @@ class RANSLoader(BaseLoader):
         ) = self._load_coords()
         self.flow_data.U = self._load_mean_velocities()
         self.flow_data.k = self._load_k()
+        
+        # metadata
+        self.flow_data = self._set_metadata()
+        
         self.flow_data = Preprocessor().compute_gradU(self.flow_data)
         self.flow_data.omega = self._load_omega()
 
-        # metadata
-        self.flow_data = self._set_metadata()
         return self.flow_data
 
     def _set_metadata(self) -> FlowData:

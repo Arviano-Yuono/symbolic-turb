@@ -1,7 +1,10 @@
+from typing import List
+
 import numpy as np
 from scipy.interpolate import griddata
 
 from symbolic_turb.core import FlowData
+from .coord_mapping import build_index_map_by_coords
 
 
 class Preprocessor:
@@ -100,48 +103,65 @@ class Preprocessor:
         return flow_data
 
     @staticmethod
-    def interpolate_scalar_field(
+    def _build_index_map_by_coords(
+        source_coords: np.ndarray,
+        target_coords: np.ndarray,
+        atol: float = 1e-10,
+    ) -> np.ndarray:
+        return build_index_map_by_coords(
+            source_coords=source_coords,
+            target_coords=target_coords,
+            atol=atol,
+        )
+
+    @staticmethod
+    def map_fields_by_coords(
         source_data: FlowData,
         target_data: FlowData,
-        field_name: str,
-        method: str = "cubic",
-    ):
+        field_names: List[str],
+        atol: float = 1e-10,
+    ) -> FlowData:
         """
-        Interpolate scalar field from source_data grid to target_data with different resolutions.
+        Map fields from source_data to target_data by coordinates.
 
-        Args:
-            source_data (FlowData): source data that will be interpolated.
-            target_data (FlowData): target data.
-
-        Returns:
-            target_data (FlowData): interpolated data.
+        Useful when both datasets represent the same points but not in the same order,
+        e.g. OpenFOAM internal field order vs another FlowData point ordering.
         """
-        assert field_name in source_data.get_field_names(), (
-            f"Field {field_name} not found in source data field name list:\n{source_data.get_field_names()}."
+        assert source_data.coords.shape[0] != 0, "source_data has no coordinates"
+        assert target_data.coords.shape[0] != 0, "target_data has no coordinates"
+
+        source_to_target_idx = Preprocessor._build_index_map_by_coords(
+            source_coords=source_data.coords,
+            target_coords=target_data.coords,
+            atol=atol,
         )
-        assert method in ["linear", "cubic"], f"Invalid interpolation method: {method}"
-        assert source_data.coords.shape[0] != 0, "Source data has no points"
-        assert target_data.coords.shape[0] != 0, "Target data has no points"
 
-        dns_points = source_data.coords[:, 1:3]
-        rans_points = target_data.coords[:, 1:3]
-
-        # get the scalar field
-
-        for i in range(3):
-            target_data.U[:, i] = griddata(
-                dns_points, source_data.U[:, i], rans_points, method="cubic"
+        n_source = source_data.coords.shape[0]
+        for field_name in field_names:
+            assert field_name in source_data.get_field_names(), (
+                f"Field '{field_name}' is not in source_data. "
+                f"Available fields: {source_data.get_field_names()}"
+            )
+            assert field_name in target_data.get_field_names(), (
+                f"Field '{field_name}' is not in target_data. "
+                f"Available fields: {target_data.get_field_names()}"
             )
 
-        target_data.k = griddata(dns_points, source_data.k, rans_points, method="cubic")
+            source_field = np.asarray(getattr(source_data, field_name))
+            assert source_field.shape[0] == n_source, (
+                f"Field '{field_name}' first axis must match source point count "
+                f"({n_source}), got {source_field.shape}"
+            )
 
-        return NotImplementedError
+            mapped_field = source_field[source_to_target_idx]
+            setattr(target_data, field_name, mapped_field.copy())
+
+        return target_data
 
     @staticmethod
     def interpolate_tensor_field(
         source_data: FlowData,
         target_data: FlowData,
-        field_name: str,
         method: str = "cubic",
     ):
         """
@@ -154,9 +174,9 @@ class Preprocessor:
         Returns:
             target_data (FlowData): interpolated data.
         """
-        assert field_name in source_data.get_field_names(), (
-            f"Field {field_name} not found in source data field name list:\n{source_data.get_field_names()}."
-        )
+        # assert field_name in source_data.get_field_names(), (
+        #     f"Field {field_name} not found in source data field name list:\n{source_data.get_field_names()}."
+        # )
         assert method in ["linear", "cubic"], f"Invalid interpolation method: {method}"
         assert source_data.coords.shape[0] != 0, "Source data has no points"
         assert target_data.coords.shape[0] != 0, "Target data has no points"

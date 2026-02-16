@@ -4,7 +4,7 @@ This module consists of a standardized data structure for flow data.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -94,34 +94,109 @@ class FlowData:
         return [field.name for field in self.__dataclass_fields__.values()]
 
     def validate(self):
-        N = self.coords.shape[0]
-        assert self.U.shape == (N, 3), (
-            f"Invalid shape for U {self.U.shape} with {N} points"
-        )
+        # coordinate arrays
+        if self.coords.size != 0 and (self.coords.ndim != 2 or self.coords.shape[1] != 3):
+            raise ValueError(f"coords must have shape (N,3), got {self.coords.shape}")
+
+        for vec_name in ("x_vec", "y_vec", "z_vec"):
+            vec = np.asarray(getattr(self, vec_name))
+            if vec.size != 0 and vec.ndim != 1:
+                raise ValueError(f"{vec_name} must be 1D, got {vec.shape}")
+
+        if self.grid_shape.size != 0 and self.grid_shape.shape != (3,):
+            raise ValueError(f"grid_shape must have shape (3,), got {self.grid_shape.shape}")
+
+        n_coords = self.coords.shape[0]
+        if self.n_points not in (0, n_coords):
+            raise ValueError(
+                f"n_points mismatch: n_points={self.n_points}, coords count={n_coords}"
+            )
+
+        point_fields: Dict[str, Tuple[int, ...]] = {
+            # vectors/scalars
+            "U": (3,),
+            "p": (),
+            "T": (),
+            "rho": (),
+            "nu": (),
+            "k": (),
+            "epsilon": (),
+            "omega": (),
+            "nut": (),
+            # tensors
+            "Rij": (3, 3),
+            "bij": (6,),
+            "gradU": (3, 3),
+            "anisotropy": (3, 3),
+            "Sij": (3, 3),
+            "Wij": (3, 3),
+            "T1": (3, 3),
+            "T2": (3, 3),
+            "T3": (3, 3),
+            "I1": (1, 1),
+            "I2": (1, 1),
+        }
+
+        for field_name, expected_tail in point_fields.items():
+            arr = np.asarray(getattr(self, field_name))
+            if arr.size == 0:
+                continue
+
+            expected_ndim = 1 + len(expected_tail)
+            if arr.ndim != expected_ndim or arr.shape[1:] != expected_tail:
+                raise ValueError(
+                    f"{field_name} must have shape (N,{','.join(str(x) for x in expected_tail)}) "
+                    f"or be empty; got {arr.shape}"
+                )
+
+            if n_coords == 0:
+                raise ValueError(
+                    f"{field_name} is populated but coords are empty; coords are required for point fields."
+                )
+
+            if arr.shape[0] != n_coords:
+                raise ValueError(
+                    f"{field_name} first axis must match coords count ({n_coords}), got {arr.shape}"
+                )
+
+        return True
 
     def save(self, save_path: str):
-        "Save FlowData object to a .pkl file"
-        return NotImplementedError
+        "Save FlowData object to a .pkl file."
         import pickle
 
         with open(save_path, "wb") as f:
             pickle.dump(self, f)
+        return save_path
 
     def load(self, load_path: str):
-        "Load FlowData object from a .pkl file"
-        return NotImplementedError
+        "Load FlowData object from a .pkl file into this instance."
         import pickle
 
         with open(load_path, "rb") as f:
-            self = pickle.load(f)
+            loaded = pickle.load(f)
+
+        if not isinstance(loaded, FlowData):
+            raise TypeError(
+                f"Expected FlowData object in '{load_path}', got {type(loaded)}"
+            )
+
+        self.__dict__.update(loaded.__dict__)
         self.validate()
         self.is_loaded = True
+        return self
+
+    @classmethod
+    def from_file(cls, load_path: str) -> "FlowData":
+        "Load a FlowData object from a .pkl file."
+        instance = cls()
+        return instance.load(load_path=load_path)
 
     def __repr__(self):
         repr_str = "FlowData(\n"
         for field_name in self.get_field_names():
             field_value = getattr(self, field_name)
-            if type(field_value) is np.ndarray:
+            if isinstance(field_value, np.ndarray):
                 repr_str += f"    {field_name}: {field_value.shape}\n"
             else:
                 repr_str += f"    {field_name}: {field_value}\n"
