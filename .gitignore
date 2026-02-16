@@ -9,6 +9,12 @@ dataset
 .pytest_cache
 lnInclude
 
+# OpenFOAM generated build artifacts
+customOpenFOAM/**/Make/linux64*/
+customOpenFOAM/**/*.o
+customOpenFOAM/**/*.dep
+customOpenFOAM/**/.Rhistory
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
