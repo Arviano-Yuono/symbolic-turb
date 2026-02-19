@@ -41,6 +41,16 @@ class FeatureDescription:
     tensor_basis: int  # ex: 2 for T2
 
 
+@dataclass(frozen=True)
+class ScalarFeatureDescription:
+    """Metadata for a single scalar (R-library) feature."""
+
+    name: str
+    invariant_power: Tuple[int, ...]
+    tensor_basis: int
+    contraction: str
+
+
 def _iter_total_degree_powers(
     n_invariants: int, max_degree: int, *, include_zero: bool
 ) -> Iterable[Tuple[int, ...]]:
@@ -95,39 +105,60 @@ def _format_invariant_name(powers: Sequence[int]) -> str:
     return " * ".join(parts) if parts else "1"
 
 
-class CandidateLibrary:
+class BaseCandidateLibrary:
+    """Shared utilities for candidate library builders."""
+
     def __init__(self, max_degree: int = 2):
         self.max_degree = int(max_degree)
-        self.feature_names: list[FeatureDescription] = []
-        self._numerical_matrix: Optional[np.ndarray] = None
         self.include_invariant_constant: bool = True
 
-    def fit_transform(self, flow_data: FlowData, threshold: float = 1e-5) -> np.ndarray:
-        """
-        Builds the library matrix Theta from flow data.
-
-        Returns
-        -------
-        Theta: np.ndarray
-            Shape: (N*9, n_features)
-        """
+    def _prepare_tensor_basis(self, flow_data: FlowData) -> Tuple[list[np.ndarray], int]:
         assert flow_data.T1.shape[0] != 0, "Tensor basis is empty"
-        assert flow_data.I1.shape[0] != 0, "Invariant is empty"
 
-        T_basis = [flow_data.T1, flow_data.T2, flow_data.T3]  # each (N,3,3)
-        invariants = [flow_data.I1, flow_data.I2]  # each (N,1,1) typically
-
+        T_basis = [
+            np.asarray(flow_data.T1, dtype=float),
+            np.asarray(flow_data.T2, dtype=float),
+            np.asarray(flow_data.T3, dtype=float),
+        ]
         N = T_basis[0].shape[0]
+
         for k, T in enumerate(T_basis, start=1):
             if T.shape != (N, 3, 3):
                 raise ValueError(f"T{k} must have shape (N,3,3). Got {T.shape}.")
-        for i, I in enumerate(invariants, start=1):
+
+        return T_basis, N
+
+    def _prepare_invariants(self, flow_data: FlowData, N: int) -> list[np.ndarray]:
+        assert flow_data.I1.shape[0] != 0, "Invariant is empty"
+
+        invariants_raw = [flow_data.I1, flow_data.I2]
+        invariants: list[np.ndarray] = []
+
+        for i, I_raw in enumerate(invariants_raw, start=1):
+            I = np.asarray(I_raw, dtype=float)
             if I.shape[0] != N:
                 raise ValueError(
                     f"I{i} must have same N as T. Got {I.shape[0]} vs {N}."
                 )
 
-        # Precompute exponent tuples
+            if I.ndim == 1:
+                I = I.reshape(N, 1, 1)
+            elif I.ndim == 2 and I.shape[1] == 1:
+                I = I.reshape(N, 1, 1)
+            elif I.ndim == 3 and I.shape[1:] == (1, 1):
+                pass
+            else:
+                raise ValueError(
+                    f"I{i} must be shape (N,1,1) or broadcastable to it; got {I.shape}."
+                )
+
+            invariants.append(I)
+
+        return invariants
+
+    def _precompute_monomials(
+        self, invariants: Sequence[np.ndarray]
+    ) -> Tuple[list[Tuple[int, ...]], list[np.ndarray]]:
         power_tuples = list(
             _iter_total_degree_powers(
                 n_invariants=len(invariants),
@@ -135,8 +166,29 @@ class CandidateLibrary:
                 include_zero=self.include_invariant_constant,
             )
         )
-
         scalar_terms = [_monomial(invariants, p) for p in power_tuples]
+        return power_tuples, scalar_terms
+
+
+class BDeltaCandidateLibrary(BaseCandidateLibrary):
+    def __init__(self, max_degree: int = 2):
+        super().__init__(max_degree=max_degree)
+        self.feature_names: list[FeatureDescription] = []
+        self._numerical_matrix: Optional[np.ndarray] = None
+
+    def fit_transform(self, flow_data: FlowData, threshold: float = 1e5) -> np.ndarray:
+        """
+        Builds the tensor library matrix Theta for b_ij correction.
+
+        Returns
+        -------
+        Theta: np.ndarray
+            Shape: (N*9, n_features)
+        """
+        T_basis, N = self._prepare_tensor_basis(flow_data=flow_data)
+        invariants = self._prepare_invariants(flow_data=flow_data, N=N)
+        power_tuples, scalar_terms = self._precompute_monomials(invariants=invariants)
+
         features_list: list[np.ndarray] = []
         descriptions: list[FeatureDescription] = []
 
@@ -148,8 +200,7 @@ class CandidateLibrary:
                 if np.max(np.abs(term)) > threshold:
                     continue
 
-                flat_term = term.reshape(-1)
-                features_list.append(flat_term)
+                features_list.append(term.reshape(-1))
 
                 inv_name = _format_invariant_name(powers)
                 name = (
@@ -157,7 +208,6 @@ class CandidateLibrary:
                     if inv_name == "1"
                     else f"{inv_name} * T{tensor_idx}"
                 )
-
                 descriptions.append(
                     FeatureDescription(
                         name=name,
@@ -183,3 +233,123 @@ class CandidateLibrary:
 
     def __len__(self):
         return len(self.feature_names)
+
+
+class RCandidateLibrary(BaseCandidateLibrary):
+    def __init__(self, max_degree: int = 2):
+        super().__init__(max_degree=max_degree)
+        self.feature_names: list[ScalarFeatureDescription] = []
+        self._numerical_matrix: Optional[np.ndarray] = None
+
+    def fit_transform(self, flow_data: FlowData, threshold: float = 1e5) -> np.ndarray:
+        """
+        Builds scalar library Theta_R for k-equation residual correction.
+
+        Returns
+        -------
+        Theta_R: np.ndarray
+            Shape: (N, n_features)
+        """
+        T_basis, N = self._prepare_tensor_basis(flow_data=flow_data)
+        invariants = self._prepare_invariants(flow_data=flow_data, N=N)
+
+        if not hasattr(flow_data, "gradU"):
+            raise AttributeError(
+                "FlowData must provide gradU with shape (N,3,3) for R library."
+            )
+        gradU = np.asarray(flow_data.gradU, dtype=float)
+        if gradU.shape != (N, 3, 3):
+            raise ValueError(
+                f"gradU must have shape (N,3,3). Got {gradU.shape} with N={N}."
+            )
+
+        power_tuples, scalar_terms = self._precompute_monomials(invariants=invariants)
+        features_list: list[np.ndarray] = []
+        descriptions: list[ScalarFeatureDescription] = []
+
+        gradU_all_zero = np.allclose(gradU, 0.0)
+        invariants_all_one = all(np.allclose(I, 1.0) for I in invariants)
+
+        for tensor_idx, T in enumerate(T_basis, start=1):
+            base_contraction = np.einsum("nij,nij->n", T, gradU)
+
+            for powers, I_term in zip(power_tuples, scalar_terms):
+                tensor_candidate = T * I_term
+                scalar_candidate = np.einsum("nij,nij->n", tensor_candidate, gradU)
+
+                # Lightweight sanity checks:
+                if gradU_all_zero:
+                    assert np.allclose(scalar_candidate, 0.0)
+                if invariants_all_one and all(int(p) == 0 for p in powers):
+                    assert np.allclose(scalar_candidate, base_contraction)
+
+                # SpaRTA magnitude filter
+                if np.max(np.abs(scalar_candidate)) > threshold:
+                    continue
+
+                features_list.append(scalar_candidate)
+
+                inv_name = _format_invariant_name(powers)
+                if inv_name == "1":
+                    name = f"T{tensor_idx} : (T_ij dU_i/dx_j)"
+                else:
+                    name = f"{inv_name} * T{tensor_idx} : (T_ij dU_i/dx_j)"
+
+                descriptions.append(
+                    ScalarFeatureDescription(
+                        name=name,
+                        invariant_power=tuple(int(p) for p in powers),
+                        tensor_basis=tensor_idx,
+                        contraction="T_ij dU_i/dx_j",
+                    )
+                )
+
+        if not features_list:
+            raise ValueError(
+                "All R candidates were filtered out! Check your data scaling."
+            )
+
+        self._numerical_matrix = np.stack(features_list, axis=1)
+        self.feature_names = descriptions
+        return self._numerical_matrix
+
+    def get_feature_name(self, idx: int) -> str:
+        return self.feature_names[idx].name
+
+    def get_features(self) -> List[str]:
+        return [self.get_feature_name(idx) for idx in range(len(self))]
+
+    def __len__(self):
+        return len(self.feature_names)
+
+
+class CandidateLibrary(BDeltaCandidateLibrary):
+    """
+    Backward-compatible wrapper for the b_ij candidate library.
+
+    Existing projects that called `CandidateLibrary.fit_transform_R(...)` keep
+    working via delegation to `RCandidateLibrary`.
+    """
+
+    def __init__(self, max_degree: int = 2):
+        super().__init__(max_degree=max_degree)
+        self.feature_names_R: list[ScalarFeatureDescription] = []
+        self._numerical_matrix_R: Optional[np.ndarray] = None
+
+    def fit_transform_R(self, flow_data: FlowData, threshold: float = 1e5) -> np.ndarray:
+        r_library = RCandidateLibrary(max_degree=self.max_degree)
+        r_library.include_invariant_constant = self.include_invariant_constant
+        theta_r = r_library.fit_transform(flow_data=flow_data, threshold=threshold)
+        self.feature_names_R = r_library.feature_names.copy()
+        self._numerical_matrix_R = theta_r
+        return theta_r
+
+    def get_feature_name_R(self, idx: int) -> str:
+        return self.feature_names_R[idx].name
+
+    def get_features_R(self) -> List[str]:
+        return [self.get_feature_name_R(idx) for idx in range(self.n_features_R)]
+
+    @property
+    def n_features_R(self) -> int:
+        return len(self.feature_names_R)
