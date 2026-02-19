@@ -62,6 +62,7 @@ class FlowData:
     epsilon: np.ndarray = field(default_factory=lambda: np.empty((0,)))  # (N,)
     omega: np.ndarray = field(default_factory=lambda: np.empty((0,)))  # (N,)
     nut: np.ndarray = field(default_factory=lambda: np.empty((0,)))  # (N,)
+    residual: np.ndarray = field(default_factory=lambda: np.empty((0,)))  # (N,)
 
     # Tensors (tensor format: (N, i, j))
     Rij: np.ndarray = field(default_factory=lambda: np.empty((0, 3, 3)))  # (N,3,3)
@@ -123,6 +124,7 @@ class FlowData:
             "epsilon": (),
             "omega": (),
             "nut": (),
+            "residual": (),
             # tensors
             "Rij": (3, 3),
             "bij": (6,),
