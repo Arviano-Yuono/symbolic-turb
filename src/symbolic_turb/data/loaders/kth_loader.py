@@ -7,11 +7,7 @@ import numpy as np
 from symbolic_turb.core import (
     FlowData,
     compute_anisotropy,
-    compute_basis_tensor,
-    compute_invariants,
     compute_k_field,
-    compute_rotation_rate,
-    compute_strain_rate,
 )
 
 from ..base_loader import BaseLoader
@@ -66,21 +62,12 @@ class KTHLoader(BaseLoader):
 
         # compute the physics
         self.flow_data.k = compute_k_field(Rij=self.flow_data.Rij)
-        self.flow_data.Sij = compute_strain_rate(gradU=self.flow_data.gradU)
-        self.flow_data.Wij = compute_rotation_rate(gradU=self.flow_data.gradU)
+        # DNS loader uses unit omega by default; if a case-specific omega is needed,
+        # provide it later and recompute normalized Sij/Wij accordingly.
+        self.flow_data.omega = np.ones_like(self.flow_data.k)
         self.flow_data.anisotropy = compute_anisotropy(
             Rij=self.flow_data.Rij, k=self.flow_data.k
         )
-
-        # ===== NOOTEE !!! THIS IS BECAUSE WE USE PURE DNS DATA FOR NOW, IN FROZEN K RANS, WE OBTAIN OMEGA FROM SOLVER =======
-        self.flow_data.omega = np.ones_like(self.flow_data.k)
-        self.flow_data.T1, self.flow_data.T2, self.flow_data.T3 = compute_basis_tensor(
-            Sij=self.flow_data.Sij, Wij=self.flow_data.Wij, omega=self.flow_data.omega
-        )
-        self.flow_data.I1, self.flow_data.I2 = compute_invariants(
-            Sij=self.flow_data.Sij, Wij=self.flow_data.Wij, omega=self.flow_data.omega
-        )
-        # ==============================================================================================================
 
         return self.flow_data
 
