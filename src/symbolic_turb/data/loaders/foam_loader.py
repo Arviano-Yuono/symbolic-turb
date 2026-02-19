@@ -1,16 +1,10 @@
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from symbolic_turb.core import (
     FlowData,
-    compute_anisotropy,
-    compute_basis_tensor,
-    compute_invariants,
-    compute_k_field,
-    compute_rotation_rate,
-    compute_strain_rate,
 )
 
 from ..base_loader import BaseLoader
@@ -26,31 +20,76 @@ class FOAMLoader(BaseLoader):
     focuses only on metadata and derived physics fields.
     """
 
+    _DEFAULT_FIELDS: Tuple[str, ...] = ("U", "k", "omega", "Rij")
+
     def __init__(
         self,
         data_path: str,
         flow_data: FlowData,
         time: Optional[str] = None,
         region: str = "region0",
+        fields: Optional[Sequence[str]] = None,
+        field_map: Optional[Dict[str, str]] = None,
+        sample_location: str = "point",
+        streamwise_average: bool = False,
+        streamwise_fields: Optional[Sequence[str]] = None,
+        streamwise_yz_atol: float = 1e-10,
     ) -> None:
         super().__init__(data_path, flow_data)
 
         self.time = time  # e.g. "0", "1000", or None -> latest
         self.region = region  # reserved for future multi-region support
+        self.fields = self._validate_fields(fields)
+        self.field_map = None if field_map is None else dict(field_map)
+        self.sample_location = sample_location
+        self.streamwise_average = streamwise_average
+        self.streamwise_fields = (
+            list(streamwise_fields) if streamwise_fields is not None else None
+        )
+        self.streamwise_yz_atol = streamwise_yz_atol
         self.simulation_config = Path(self.data_path).name
 
         self._raw_flow_data: Optional[FlowData] = None
+
+    @classmethod
+    def _validate_fields(cls, fields: Optional[Sequence[str]]) -> List[str]:
+        requested = list(cls._DEFAULT_FIELDS if fields is None else fields)
+        if not requested:
+            raise ValueError("FOAMLoader: 'fields' must not be empty")
+
+        known_fields = set(FlowData().get_field_names())
+        unknown = [name for name in requested if name not in known_fields]
+        if unknown:
+            raise ValueError(
+                "FOAMLoader: unknown field(s) in 'fields': "
+                f"{unknown}. Available FlowData fields: {sorted(known_fields)}"
+            )
+        return requested
 
     def _read_raw(self) -> FlowData:
         if self._raw_flow_data is None:
             self._raw_flow_data = read_flow_data_from_openfoam(
                 case_path=self.data_path,
                 time=self.time,
-                fields=["U", "k", "omega", "Rij"],
+                fields=self.fields,
+                field_map=self.field_map,
+                sample_location=self.sample_location,
             )
+            if self.streamwise_average:
+                self._raw_flow_data = Preprocessor.streamwise_average_flow_data(
+                    flow_data=self._raw_flow_data,
+                    field_names=self.streamwise_fields,
+                    yz_atol=self.streamwise_yz_atol,
+                )
         return self._raw_flow_data
 
     def load(self) -> FlowData:
+        if "U" not in self.fields:
+            raise ValueError(
+                "FOAMLoader.load() requires 'U' in requested fields to build "
+                "coordinates, gradU, and derived metadata."
+            )
+
         # required fields
         (
             self.flow_data.x_vec,
@@ -67,51 +106,28 @@ class FOAMLoader(BaseLoader):
         self.flow_data = Preprocessor().compute_gradU(flow_data=self.flow_data)
 
         raw = self._read_raw()
-        k = np.asarray(raw.k, dtype=float).reshape(-1) if raw.k.size != 0 else None
-        omega = (
-            np.asarray(raw.omega, dtype=float).reshape(-1) if raw.omega.size != 0 else None
-        )
-        Rij = np.asarray(raw.Rij, dtype=float) if raw.Rij.size != 0 else None
+        non_point_fields = {
+            "simulation_config",
+            "n_points",
+            "grid_shape",
+            "x_vec",
+            "y_vec",
+            "z_vec",
+            "coords",
+            "is_loaded",
+            "is_preprocessed",
+        }
 
-        # physics
-        self.flow_data.Sij = compute_strain_rate(gradU=self.flow_data.gradU)
-        self.flow_data.Wij = compute_rotation_rate(gradU=self.flow_data.gradU)
+        for field_name in self.fields:
+            if field_name == "U" or field_name in non_point_fields:
+                continue
+            values = np.asarray(getattr(raw, field_name))
+            if values.size == 0:
+                continue
+            setattr(self.flow_data, field_name, values.copy())
 
-        # Prefer k if present, otherwise infer from Rij if present
-        if k is not None:
-            self.flow_data.k = k
-        elif Rij is not None:
-            self.flow_data.Rij = Rij
-            self.flow_data.k = compute_k_field(Rij=Rij)
-        else:
-            raise RuntimeError(
-                "FOAMLoader: couldn't find 'k' field and couldn't find any Rij field "
-                "(e.g., R/Rij/ReynoldsStress/tau_ij). Please write 'k' or export Rij."
-            )
-
-        # omega (if not present fallback like DNS case)
-        if omega is not None:
-            self.flow_data.omega = omega
-        else:
-            self.flow_data.omega = np.ones_like(self.flow_data.k)
-
-        # anisotropy only if Rij exists
-        if Rij is not None:
-            self.flow_data.Rij = Rij
-            self.flow_data.anisotropy = compute_anisotropy(
-                Rij=Rij, k=self.flow_data.k
-            )
-
-        self.flow_data.T1, self.flow_data.T2, self.flow_data.T3 = compute_basis_tensor(
-            Sij=self.flow_data.Sij,
-            Wij=self.flow_data.Wij,
-            omega=self.flow_data.omega,
-        )
-        self.flow_data.I1, self.flow_data.I2 = compute_invariants(
-            Sij=self.flow_data.Sij,
-            Wij=self.flow_data.Wij,
-            omega=self.flow_data.omega,
-        )
+        if self.flow_data.omega.size == 0:
+            self.flow_data.omega = np.ones((self.flow_data.n_points,), dtype=float)
 
         return self.flow_data
 
@@ -119,7 +135,7 @@ class FOAMLoader(BaseLoader):
         raw = self._read_raw()
         coords = np.asarray(raw.coords, dtype=float)
         if coords.ndim != 2 or coords.shape[1] != 3:
-            raise RuntimeError(f"FOAMLoader: cell centres have unexpected shape: {coords.shape}")
+            raise RuntimeError(f"FOAMLoader: coordinates have unexpected shape: {coords.shape}")
         return raw.x_vec.copy(), raw.y_vec.copy(), raw.z_vec.copy(), coords.copy()
 
     def _load_mean_velocities(self) -> np.ndarray:
