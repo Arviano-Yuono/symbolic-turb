@@ -111,7 +111,10 @@ volScalarField evalScalarAddSub
     label& i,
     const volScalarField& I1,
     const volScalarField& I2,
-    const fvMesh& mesh
+    const fvMesh& mesh,
+    const volScalarField* N1Ptr = nullptr,
+    const volScalarField* N2Ptr = nullptr,
+    const volScalarField* N3Ptr = nullptr
 );
 
 volScalarField evalScalarFactor
@@ -120,7 +123,10 @@ volScalarField evalScalarFactor
     label& i,
     const volScalarField& I1,
     const volScalarField& I2,
-    const fvMesh& mesh
+    const fvMesh& mesh,
+    const volScalarField* N1Ptr,
+    const volScalarField* N2Ptr,
+    const volScalarField* N3Ptr
 )
 {
     if (i >= tokens.size())
@@ -133,13 +139,49 @@ volScalarField evalScalarFactor
     if (tokens[i] == "(")
     {
         ++i;
-        volScalarField result = evalScalarAddSub(tokens, i, I1, I2, mesh);
+        volScalarField result = evalScalarAddSub
+        (
+            tokens, i, I1, I2, mesh, N1Ptr, N2Ptr, N3Ptr
+        );
         consumeToken(tokens, i, ")", "scalar expression");
         return result;
     }
 
     if (tokens[i] == "I1") { i++; return I1; }
     if (tokens[i] == "I2") { i++; return I2; }
+    if (tokens[i] == "N1")
+    {
+        if (!N1Ptr)
+        {
+            FatalErrorInFunction
+                << "Token N1 is not available in this expression context" << nl
+                << abort(FatalError);
+        }
+        i++;
+        return *N1Ptr;
+    }
+    if (tokens[i] == "N2")
+    {
+        if (!N2Ptr)
+        {
+            FatalErrorInFunction
+                << "Token N2 is not available in this expression context" << nl
+                << abort(FatalError);
+        }
+        i++;
+        return *N2Ptr;
+    }
+    if (tokens[i] == "N3")
+    {
+        if (!N3Ptr)
+        {
+            FatalErrorInFunction
+                << "Token N3 is not available in this expression context" << nl
+                << abort(FatalError);
+        }
+        i++;
+        return *N3Ptr;
+    }
 
     // Number (supports "-0.1" as a single token)
     scalar val = readScalar(IStringStream(tokens[i])());
@@ -153,10 +195,16 @@ volScalarField evalScalarPower
     label& i,
     const volScalarField& I1,
     const volScalarField& I2,
-    const fvMesh& mesh
+    const fvMesh& mesh,
+    const volScalarField* N1Ptr,
+    const volScalarField* N2Ptr,
+    const volScalarField* N3Ptr
 )
 {
-    volScalarField lhs = evalScalarFactor(tokens, i, I1, I2, mesh);
+    volScalarField lhs = evalScalarFactor
+    (
+        tokens, i, I1, I2, mesh, N1Ptr, N2Ptr, N3Ptr
+    );
 
     while (i < tokens.size() && tokens[i] == "^")
     {
@@ -182,10 +230,16 @@ volScalarField evalScalarMulDiv
     label& i,
     const volScalarField& I1,
     const volScalarField& I2,
-    const fvMesh& mesh
+    const fvMesh& mesh,
+    const volScalarField* N1Ptr,
+    const volScalarField* N2Ptr,
+    const volScalarField* N3Ptr
 )
 {
-    volScalarField lhs = evalScalarPower(tokens, i, I1, I2, mesh);
+    volScalarField lhs = evalScalarPower
+    (
+        tokens, i, I1, I2, mesh, N1Ptr, N2Ptr, N3Ptr
+    );
 
     while (i < tokens.size())
     {
@@ -201,8 +255,14 @@ volScalarField evalScalarMulDiv
         }
         ++i;
 
-        if (op == "*") lhs *= evalScalarPower(tokens, i, I1, I2, mesh);
-        else           lhs /= evalScalarPower(tokens, i, I1, I2, mesh);
+        if (op == "*")
+        {
+            lhs *= evalScalarPower(tokens, i, I1, I2, mesh, N1Ptr, N2Ptr, N3Ptr);
+        }
+        else
+        {
+            lhs /= evalScalarPower(tokens, i, I1, I2, mesh, N1Ptr, N2Ptr, N3Ptr);
+        }
     }
     return lhs;
 }
@@ -213,10 +273,16 @@ volScalarField evalScalarAddSub
     label& i,
     const volScalarField& I1,
     const volScalarField& I2,
-    const fvMesh& mesh
+    const fvMesh& mesh,
+    const volScalarField* N1Ptr,
+    const volScalarField* N2Ptr,
+    const volScalarField* N3Ptr
 )
 {
-    volScalarField lhs = evalScalarMulDiv(tokens, i, I1, I2, mesh);
+    volScalarField lhs = evalScalarMulDiv
+    (
+        tokens, i, I1, I2, mesh, N1Ptr, N2Ptr, N3Ptr
+    );
 
     while (i < tokens.size())
     {
@@ -227,8 +293,14 @@ volScalarField evalScalarAddSub
         }
         ++i;
 
-        if (op == "+") lhs += evalScalarMulDiv(tokens, i, I1, I2, mesh);
-        else           lhs -= evalScalarMulDiv(tokens, i, I1, I2, mesh);
+        if (op == "+")
+        {
+            lhs += evalScalarMulDiv(tokens, i, I1, I2, mesh, N1Ptr, N2Ptr, N3Ptr);
+        }
+        else
+        {
+            lhs -= evalScalarMulDiv(tokens, i, I1, I2, mesh, N1Ptr, N2Ptr, N3Ptr);
+        }
     }
 
     return lhs;

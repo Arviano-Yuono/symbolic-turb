@@ -32,6 +32,9 @@ License
 #include "volFields.H"
 #include "coordinateSystem.H"
 
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <sstream>
 #include <string>
 
@@ -551,15 +554,15 @@ void kOmegaSSTA<BasicTurbulenceModel>::correct()
     );
 
     tmp<volTensorField> tgradU = fvc::grad(U);
-    tmp<volTensorField> tgradv = fvc::grad(fvc::curl(U));
     tmp<volVectorField> tgradk = fvc::grad(k_);
     tmp<volVectorField> tgradmagU = fvc::grad(mag(U));
     volScalarField S2(2*magSqr(symm(tgradU())));
-    volScalarField om(sqrt(2*magSqr(skew(tgradv()))));
+    volScalarField S(sqrt(S2));
 
 //******************************add by yuan***********************************//
-    volScalarField S = sqrt(S2);
-    volScalarField tau =  1./max( S/0.31 + this->omegaMin_,(omega_ + this->omegaMin_));
+    // Match Python/SpaRTA feature normalization:
+    // tau = 1/omega, S = symm(gradU)/omega, W = skew(gradU)/omega.
+    volScalarField tau = 1./max( S/0.31 + this->omegaMin_,(omega_ + this->omegaMin_));
     volScalarField tau2 = sqr(tau);
     volSymmTensorField sij(dev(symm(tgradU())));
     volTensorField omegaij((skew(tgradU())));
@@ -568,58 +571,373 @@ void kOmegaSSTA<BasicTurbulenceModel>::correct()
     volSymmTensorField T1(tau*sij);
     volSymmTensorField T2(tau2*(symm((sij & omegaij) - (omegaij & sij))));
     volSymmTensorField T3(tau2*(symm(sij & sij)) - (scalar(1.0/3.0))*I1*I);
-   // Add new features
-    dimensionedScalar small(
-        "0", dimensionSet(0,1,-3,0,0,0,0), 1e-20
-    );
-    dimensionedScalar Newsmall(
-        "0", dimensionSet(0,0,0,0,0,0,0), 1e-20
-    );
-    dimensionedScalar constantInRe(
-        "0", dimensionSet(0,0,0,0,0,0,0), 2
-    );
-    tmp<volVectorField> tgradP = fvc::grad(p);
 
-    // CORRECTION MODEL INJECTION
-    string rawExpr = this->coeffDict_.lookup("correctionModel");
+    const bool printSpaRTAScaling =
+        this->coeffDict_.found("printSpaRTAScaling")
+      ? readBool(this->coeffDict_.lookup("printSpaRTAScaling"))
+      : false;
 
-    // NOTE: Do NOT touch '-' globally (would break 1e-07).
-    rawExpr.replaceAll("(", " ( ");
-    rawExpr.replaceAll(")", " ) ");
-    rawExpr.replaceAll("*", " * ");
-    rawExpr.replaceAll("/", " / ");
-    rawExpr.replaceAll("+", " + ");
-    rawExpr.replaceAll("^", " ^ ");
+    const bool printSpaRTADiagnostics =
+        this->coeffDict_.found("printSpaRTADiagnostics")
+      ? readBool(this->coeffDict_.lookup("printSpaRTADiagnostics"))
+      : false;
 
-    rawExpr.replaceAll(") (", ") (");
-
-    DynamicList<word> tokDyn;
-
+    if (printSpaRTAScaling)
     {
-        std::string s(rawExpr.c_str());
-
-        std::istringstream iss(s);
-        std::string item;
-        while (iss >> item)
+        static bool printedScalingFormula(false);
+        if (!printedScalingFormula)
         {
-            tokDyn.append(word(item));
+            Info<< "SpaRTA scaling formulas: "
+                << "tau=1/max(omega,omegaMin), "
+                << "Sij=tau*symm(gradU), Wij=tau*skew(gradU), "
+                << "I1=tr(Sij&Sij), I2=tr(Wij&Wij), "
+                << "U_b=<U_x>_V, gradU_norm=gradU/U_b."
+                << nl;
+            printedScalingFormula = true;
+        }
+
+        volScalarField Ux(U.component(vector::X));
+        volScalarField Uy(U.component(vector::Y));
+        volScalarField Uz(U.component(vector::Z));
+        volScalarField gradUMag(mag(tgradU()));
+        volScalarField T1T1(T1 && T1);
+        volScalarField T2T2(T2 && T2);
+        volScalarField T3T3(T3 && T3);
+        volScalarField T1GradU(T1 && tgradU());
+        volScalarField T2GradU(T2 && tgradU());
+        volScalarField T3GradU(T3 && tgradU());
+
+        auto printScalingStats =
+            [](const char* name, const volScalarField& field)
+            {
+                Info<< "SpaRTA scaling: name=" << name
+                    << " min=" << gMin(field)
+                    << " max=" << gMax(field)
+                    << " avg=" << gAverage(field)
+                    << nl;
+            };
+
+        auto printScalingConstant =
+            [](const char* name, const scalar value)
+            {
+                Info<< "SpaRTA scaling: name=" << name
+                    << " min=" << value
+                    << " max=" << value
+                    << " avg=" << value
+                    << nl;
+            };
+
+        const scalar totalVolume = gSum(this->mesh_.V());
+        const scalar ub =
+            totalVolume > VSMALL
+          ? fvc::domainIntegrate(Ux).value()/totalVolume
+          : 0.0;
+        const scalar ubAbs = mag(ub);
+        const bool hasExpectedUb = this->coeffDict_.found("expectedUb");
+        const scalar expectedUb =
+            hasExpectedUb ? readScalar(this->coeffDict_.lookup("expectedUb")) : 0.0;
+        const scalar ubRelativeWarning =
+            this->coeffDict_.found("ubRelativeWarning")
+          ? readScalar(this->coeffDict_.lookup("ubRelativeWarning"))
+          : 0.05;
+        const scalar ubRelativeDiff =
+            hasExpectedUb
+          ? ubAbs/max(mag(expectedUb), SMALL)
+          : 0.0;
+
+        printScalingConstant("U_b", ub);
+        printScalingStats("Ux", Ux);
+        printScalingStats("Uy", Uy);
+        printScalingStats("Uz", Uz);
+        printScalingStats("gradU_mag", gradUMag);
+        printScalingStats("omega", omega_);
+        printScalingStats("S", S);
+        printScalingStats("tau", tau);
+        printScalingStats("I1", I1);
+        printScalingStats("I2", I2);
+        printScalingStats("T1:T1", T1T1);
+        printScalingStats("T2:T2", T2T2);
+        printScalingStats("T3:T3", T3T3);
+        printScalingStats("T1:gradU", T1GradU);
+        printScalingStats("T2:gradU", T2GradU);
+        printScalingStats("T3:gradU", T3GradU);
+
+        if (hasExpectedUb)
+        {
+            const scalar ubError =
+                mag(ub - expectedUb)/max(mag(expectedUb), SMALL);
+            printScalingConstant("U_b_expected", expectedUb);
+            printScalingConstant("U_b_relative_to_expected", ubRelativeDiff);
+            printScalingConstant("U_b_relative_error", ubError);
+
+            if (ubError > ubRelativeWarning)
+            {
+                WarningInFunction
+                    << "SpaRTA scaling warning: runtime U_b=" << ub
+                    << " differs from expectedUb=" << expectedUb
+                    << " by relative error " << ubError
+                    << " (threshold ubRelativeWarning=" << ubRelativeWarning << ")."
+                    << nl;
+            }
+        }
+
+        if (ubAbs <= VSMALL)
+        {
+            WarningInFunction
+                << "SpaRTA scaling warning: |U_b|=" << ubAbs
+                << " is too small. Skipping U/U_b and gradU/U_b diagnostics."
+                << nl;
+        }
+        else
+        {
+            const dimensionedScalar UbScale("UbScale", U.dimensions(), ub);
+            const dimensionedScalar UbAbsScale("UbAbsScale", U.dimensions(), ubAbs);
+
+            volVectorField UNorm(U/UbScale);
+            volTensorField gradUNorm(tgradU()/UbScale);
+            volSymmTensorField sijNorm(symm(gradUNorm));
+            volTensorField omegaijNorm(skew(gradUNorm));
+            volScalarField SNorm(sqrt(2*magSqr(sijNorm)));
+            volScalarField I1Norm(tr(sijNorm & sijNorm));
+            volScalarField I2Norm(tr(omegaijNorm & omegaijNorm));
+            volSymmTensorField T1Norm(sijNorm);
+            volSymmTensorField T2Norm(symm((sijNorm & omegaijNorm) - (omegaijNorm & sijNorm)));
+            volSymmTensorField T3Norm(
+                (symm(sijNorm & sijNorm)) - (scalar(1.0/3.0))*I1Norm*I
+            );
+
+            volScalarField UxOverUb(UNorm.component(vector::X));
+            volScalarField UyOverUb(UNorm.component(vector::Y));
+            volScalarField UzOverUb(UNorm.component(vector::Z));
+            volScalarField gradUMagOverUb(gradUMag/UbAbsScale);
+            volScalarField T1NormT1Norm(T1Norm && T1Norm);
+            volScalarField T2NormT2Norm(T2Norm && T2Norm);
+            volScalarField T3NormT3Norm(T3Norm && T3Norm);
+            volScalarField T1NormGradUNorm(T1Norm && gradUNorm);
+            volScalarField T2NormGradUNorm(T2Norm && gradUNorm);
+            volScalarField T3NormGradUNorm(T3Norm && gradUNorm);
+
+            printScalingStats("Ux/U_b", UxOverUb);
+            printScalingStats("Uy/U_b", UyOverUb);
+            printScalingStats("Uz/U_b", UzOverUb);
+            printScalingStats("gradU_mag/U_b", gradUMagOverUb);
+            printScalingStats("S_norm", SNorm);
+            printScalingStats("I1_norm", I1Norm);
+            printScalingStats("I2_norm", I2Norm);
+            printScalingStats("T1_norm:T1_norm", T1NormT1Norm);
+            printScalingStats("T2_norm:T2_norm", T2NormT2Norm);
+            printScalingStats("T3_norm:T3_norm", T3NormT3Norm);
+            printScalingStats("T1_norm:gradU_norm", T1NormGradUNorm);
+            printScalingStats("T2_norm:gradU_norm", T2NormGradUNorm);
+            printScalingStats("T3_norm:gradU_norm", T3NormGradUNorm);
         }
     }
 
-    wordList tokens(tokDyn.shrink());
-
-    if (debug)
+    if (printSpaRTADiagnostics)
     {
-        Info<< "correctionModel tokens: " << tokens << nl;
+        volScalarField T1T1(T1 && T1);
+        volScalarField T2T2(T2 && T2);
+        volScalarField T3T3(T3 && T3);
+        Info<< "SpaRTA feature stats:"
+            << " I1[min,max]=[" << gMin(I1) << ", " << gMax(I1) << "]"
+            << " I2[min,max]=[" << gMin(I2) << ", " << gMax(I2) << "]"
+            << " T1:T1[min,max]=[" << gMin(T1T1) << ", " << gMax(T1T1) << "]"
+            << " T2:T2[min,max]=[" << gMin(T2T2) << ", " << gMax(T2T2) << "]"
+            << " T3:T3[min,max]=[" << gMin(T3T3) << ", " << gMax(T3T3) << "]"
+            << nl;
     }
 
-    label idx = 0;
-    volSymmTensorField result = evalTensorAddSub(tokens, idx, I1, I2, T1, T2, T3, this->mesh());
-    nonlinearStress_ = 2.0 * k_ * result;
+    tmp<volVectorField> tgradP = fvc::grad(p);
+
+    const bool hasBModelExpression = this->coeffDict_.found("bModelExpression");
+    const bool hasLegacyCorrection = this->coeffDict_.found("correctionModel");
+    const bool hasRModelExpression = this->coeffDict_.found("RModelExpression");
+    const auto isNumericZeroExpression = [](const string& expr) -> bool
+    {
+        std::string normalized(expr.c_str());
+        normalized.erase
+        (
+            std::remove_if
+            (
+                normalized.begin(),
+                normalized.end(),
+                [](const unsigned char c) { return std::isspace(c) != 0; }
+            ),
+            normalized.end()
+        );
+
+        if (normalized.empty())
+        {
+            return false;
+        }
+
+        if
+        (
+            normalized.size() >= 2
+         && (
+                (normalized.front() == '"' && normalized.back() == '"')
+             || (normalized.front() == '\'' && normalized.back() == '\'')
+            )
+        )
+        {
+            normalized = normalized.substr(1, normalized.size() - 2);
+        }
+
+        if (normalized.empty())
+        {
+            return false;
+        }
+
+        try
+        {
+            std::size_t pos = 0;
+            const double value = std::stod(normalized, &pos);
+            return pos == normalized.size() && std::abs(value) <= SMALL;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    };
+
+    if (hasBModelExpression && hasLegacyCorrection)
+    {
+        WarningInFunction
+            << "Both bModelExpression and correctionModel found. "
+            << "Using bModelExpression and ignoring correctionModel." << nl;
+    }
+
+    if (hasBModelExpression || hasLegacyCorrection)
+    {
+        // CORRECTION MODEL INJECTION (nonlinear stress / b-delta model)
+        string rawBExpr =
+            hasBModelExpression
+          ? string(this->coeffDict_.lookup("bModelExpression"))
+          : string(this->coeffDict_.lookup("correctionModel"));
+        if (isNumericZeroExpression(rawBExpr))
+        {
+            nonlinearStress_ = dimensionedSymmTensor
+            (
+                "nonlinearStress",
+                sqr(dimVelocity),
+                symmTensor::zero
+            );
+        }
+        else
+        {
+            // NOTE: Do NOT touch '-' globally (would break 1e-07).
+            rawBExpr.replaceAll("(", " ( ");
+            rawBExpr.replaceAll(")", " ) ");
+            rawBExpr.replaceAll("*", " * ");
+            rawBExpr.replaceAll("/", " / ");
+            rawBExpr.replaceAll("+", " + ");
+            rawBExpr.replaceAll("^", " ^ ");
+            rawBExpr.replaceAll(") (", ") (");
+
+            DynamicList<word> bTokDyn;
+            {
+                std::string s(rawBExpr.c_str());
+                std::istringstream iss(s);
+                std::string item;
+                while (iss >> item)
+                {
+                    bTokDyn.append(word(item));
+                }
+            }
+
+            wordList bTokens(bTokDyn.shrink());
+            if (debug)
+            {
+                Info<< "bModelExpression tokens: " << bTokens << nl;
+            }
+
+            label bIdx = 0;
+            volSymmTensorField result =
+                evalTensorAddSub(bTokens, bIdx, I1, I2, T1, T2, T3, this->mesh());
+            nonlinearStress_ = 2.0 * k_ * result;
+        }
+    }
+    else
+    {
+        nonlinearStress_ = dimensionedSymmTensor
+        (
+            "nonlinearStress",
+            sqr(dimVelocity),
+            symmTensor::zero
+        );
+    }
+
     nonlinearStress_.correctBoundaryConditions();
-    
+
     Rij_.correctBoundaryConditions();
     volScalarField Rterm(Rij_ && symm(tgradU()));
+
+    if (hasRModelExpression)
+    {
+        // R correction expression (k-equation residual correction)
+        string rawRExpr = string(this->coeffDict_.lookup("RModelExpression"));
+        if (isNumericZeroExpression(rawRExpr))
+        {
+            Rterm = dimensionedScalar("Rterm", Rterm.dimensions(), 0.0);
+            Rterm.correctBoundaryConditions();
+        }
+        else
+        {
+            // Support expressions produced by Python RCandidateLibrary names
+            rawRExpr.replaceAll("T1 : (T_ij dU_i/dx_j)", "N1");
+            rawRExpr.replaceAll("T2 : (T_ij dU_i/dx_j)", "N2");
+            rawRExpr.replaceAll("T3 : (T_ij dU_i/dx_j)", "N3");
+            rawRExpr.replaceAll("T1:(T_ij dU_i/dx_j)", "N1");
+            rawRExpr.replaceAll("T2:(T_ij dU_i/dx_j)", "N2");
+            rawRExpr.replaceAll("T3:(T_ij dU_i/dx_j)", "N3");
+
+            // NOTE: Do NOT touch '-' globally (would break 1e-07).
+            rawRExpr.replaceAll("(", " ( ");
+            rawRExpr.replaceAll(")", " ) ");
+            rawRExpr.replaceAll("*", " * ");
+            rawRExpr.replaceAll("/", " / ");
+            rawRExpr.replaceAll("+", " + ");
+            rawRExpr.replaceAll("^", " ^ ");
+            rawRExpr.replaceAll(") (", ") (");
+
+            DynamicList<word> rTokDyn;
+            {
+                std::string s(rawRExpr.c_str());
+                std::istringstream iss(s);
+                std::string item;
+                while (iss >> item)
+                {
+                    rTokDyn.append(word(item));
+                }
+            }
+
+            wordList rTokens(rTokDyn.shrink());
+            if (debug)
+            {
+                Info<< "RModelExpression tokens: " << rTokens << nl;
+            }
+
+            // N1/N2/N3 correspond to R-library contractions, scaled by 2k.
+            volScalarField N1(2.0*k_*(T1 && symm(tgradU())));
+            volScalarField N2(2.0*k_*(T2 && symm(tgradU())));
+            volScalarField N3(2.0*k_*(T3 && symm(tgradU())));
+
+            label rIdx = 0;
+            Rterm = evalScalarAddSub
+            (
+                rTokens,
+                rIdx,
+                I1,
+                I2,
+                this->mesh(),
+                &N1,
+                &N2,
+                &N3
+            );
+            Rterm.correctBoundaryConditions();
+        }
+    }
+
     Rall_= ((2.0/3.0)*I)*k_ - this->nut_*dev(twoSymm(tgradU()))+ nonlinearStress_;
     Rall_.correctBoundaryConditions();
 //***********************************************************************************//
@@ -641,6 +959,49 @@ void kOmegaSSTA<BasicTurbulenceModel>::correct()
 
     volScalarField F1(this->F1(CDkOmega));
     volScalarField F23(this->F23());
+    dimensionedScalar nutSmall("nutSmall", this->nut_.dimensions(), 1e-20);
+    volScalarField::Internal nutSafe(max(this->nut_(), nutSmall));
+    volScalarField::Internal PkTerm(this->Pk(G));
+    volScalarField::Internal kOmegaProdLimiter
+    (
+        (c1_/a1_)*betaStar_*omega_()
+       *max(a1_*omega_(), b1_*F23()*sqrt(S2()))
+    );
+    volScalarField::Internal omegaBaseByNut(GbyNuaijx);
+    volScalarField::Internal omegaRByNut(Rterm()/nutSafe);
+    volScalarField::Internal omegaProdUnclipped(omegaBaseByNut + omegaRByNut);
+    volScalarField::Internal PkPlusR(PkTerm + Rterm());
+    volScalarField::Internal omegaProdByNut
+    (
+        min(omegaProdUnclipped, kOmegaProdLimiter)
+    );
+
+    if (printSpaRTADiagnostics)
+    {
+        const scalar pAbsMax = max(mag(gMin(PkTerm)), mag(gMax(PkTerm)));
+        const scalar rAbsMax = max(mag(gMin(Rterm)), mag(gMax(Rterm)));
+        const scalar prAbsMax = max(mag(gMin(PkPlusR)), mag(gMax(PkPlusR)));
+        volScalarField betaStarOmegaK(betaStar_*omega_*k_);
+
+        Info<< "SpaRTA source stats:"
+            << " k[min,max]=[" << gMin(k_) << ", " << gMax(k_) << "]"
+            << " omega[min,max]=[" << gMin(omega_) << ", " << gMax(omega_) << "]"
+            << " nut[min,max]=[" << gMin(this->nut_) << ", " << gMax(this->nut_) << "]"
+            << " Pk[min,max]=[" << gMin(PkTerm) << ", " << gMax(PkTerm) << "]"
+            << " R[min,max]=[" << gMin(Rterm) << ", " << gMax(Rterm) << "]"
+            << " (Pk+R)[min,max]=[" << gMin(PkPlusR) << ", " << gMax(PkPlusR) << "]"
+            << " omegaBaseByNut[min,max]=[" << gMin(omegaBaseByNut) << ", "
+            << gMax(omegaBaseByNut) << "]"
+            << " omegaRByNut[min,max]=[" << gMin(omegaRByNut) << ", "
+            << gMax(omegaRByNut) << "]"
+            << " omegaProdByNut[min,max]=[" << gMin(omegaProdByNut) << ", "
+            << gMax(omegaProdByNut) << "]"
+            << " betaStar*omega*k[min,max]=[" << gMin(betaStarOmegaK)
+            << ", " << gMax(betaStarOmegaK) << "]"
+            << " max|R|/max|Pk|=" << (pAbsMax > VSMALL ? rAbsMax/pAbsMax : 0.0)
+            << " max|Pk+R|=" << prAbsMax
+            << nl;
+    }
 
     {
         volScalarField::Internal gamma(this->gamma(F1));
@@ -654,12 +1015,7 @@ void kOmegaSSTA<BasicTurbulenceModel>::correct()
           - fvm::laplacian(alpha*rho*DomegaEff(F1), omega_)
          ==
             alpha()*rho()*gamma
-           *min
-            (
-                GbyNuaijx,
-                (c1_/a1_)*betaStar_*omega_()
-               *max(a1_*omega_(), b1_*F23()*sqrt(S2()))
-            )
+           *omegaProdByNut
           - fvm::SuSp((2.0/3.0)*alpha()*rho()*gamma*divU, omega_)
           - fvm::Sp(alpha()*rho()*beta*omega_(), omega_)
           - fvm::SuSp
@@ -687,7 +1043,7 @@ void kOmegaSSTA<BasicTurbulenceModel>::correct()
       + fvm::div(alphaRhoPhi, k_)
       - fvm::laplacian(alpha*rho*DkEff(F1), k_)
      ==
-        alpha()*rho()*Pk(G)
+        alpha()*rho()*PkTerm
       + alpha()*rho()*Rterm
       - fvm::SuSp((2.0/3.0)*alpha()*rho()*divU, k_)
       - fvm::Sp(alpha()*rho()*epsilonByk(F1, F23), k_)
