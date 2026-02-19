@@ -10,12 +10,11 @@ Input shape notes:
     Wij (np.ndarray): Rotation rate tensor field (N, 3, 3)
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
 from . import tensor_operators as ops
-from .flow_structure import FlowData
 
 
 def compute_incompressibility(gradU: np.ndarray) -> None:
@@ -38,27 +37,55 @@ def compute_incompressibility(gradU: np.ndarray) -> None:
     """)
 
 
-def compute_strain_rate(gradU: np.ndarray) -> np.ndarray:
+def compute_strain_rate(
+    gradU: np.ndarray, omega: Optional[np.ndarray] = None
+) -> np.ndarray:
     """
     Calculate the strain rate tensor field: S = 0.5 * (gradU + gradU^T)
 
     Args:
         gradU (np.ndarray): Gradient of velocity field
+        omega (Optional[np.ndarray]): Optional omega field of shape (N,). If provided,
+            S is normalized by omega as S / omega.
     """
     assert gradU.shape[0] != 0, "gradU must not be empty"
     Sij = 0.5 * (gradU + ops.transpose(gradU))
+
+    if omega is not None:
+        omega_arr = np.asarray(omega, dtype=float).reshape(-1)
+        if omega_arr.shape[0] != gradU.shape[0]:
+            raise ValueError(
+                "omega must have same N as gradU. "
+                f"Got omega={omega_arr.shape[0]} and gradU={gradU.shape[0]}."
+            )
+        Sij = Sij / omega_arr[:, None, None]
+
     return Sij
 
 
-def compute_rotation_rate(gradU: np.ndarray) -> np.ndarray:
+def compute_rotation_rate(
+    gradU: np.ndarray, omega: Optional[np.ndarray] = None
+) -> np.ndarray:
     """
     Calculate the rotation rate tensor field: W = 0.5 * (gradU - gradU^T)
 
     Args:
         gradU (np.ndarray): Gradient of velocity field
+        omega (Optional[np.ndarray]): Optional omega field of shape (N,). If provided,
+            W is normalized by omega as W / omega.
     """
     assert gradU.shape[0] != 0, "gradU must not be empty"
     Wij = 0.5 * (gradU - ops.transpose(gradU))
+
+    if omega is not None:
+        omega_arr = np.asarray(omega, dtype=float).reshape(-1)
+        if omega_arr.shape[0] != gradU.shape[0]:
+            raise ValueError(
+                "omega must have same N as gradU. "
+                f"Got omega={omega_arr.shape[0]} and gradU={gradU.shape[0]}."
+            )
+        Wij = Wij / omega_arr[:, None, None]
+
     return Wij
 
 
@@ -100,10 +127,10 @@ def compute_anisotropy(Rij: np.ndarray, k: np.ndarray) -> np.ndarray:
 
 
 def compute_basis_tensor(
-    Sij: np.ndarray, Wij: np.ndarray, omega: np.ndarray,
+    Sij: np.ndarray, Wij: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Calculate the omega-normalzed basis tensors based on SpaRTA paper (T1, T2, T3) using tensor operators.
+    Calculate basis tensors based on SpaRTA paper (T1, T2, T3) using tensor operators.
 
     T1 = S
     T2 = SW - WS
@@ -112,7 +139,6 @@ def compute_basis_tensor(
     Args:
         Sij (np.ndarray): Strain rate tensor field
         Wij (np.ndarray): Rotation rate tensor field
-        omega (np.ndarray): omega tensor field
 
     """
     assert Sij.shape[0] != 0, "strain rate must be computed"
@@ -130,33 +156,23 @@ def compute_basis_tensor(
     S2 = ops.matmul(Sij, Sij)
     T3 = ops.deviatoric(S2)
 
-    # NORMALIZED
-    T1 = T1/omega[:, None, None]
-    T2 = T2/omega[:, None, None]
-    T3 = T3/omega[:, None, None]
-
     return (T1, T2, T3)
 
 
 def compute_invariants(
-    Sij: np.ndarray, Wij: np.ndarray, omega: np.ndarray
+    Sij: np.ndarray, Wij: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Computes omega-normalzed I1 and I2 according to Pope/SpaRTA using double dot products.
+    Computes I1 and I2 according to Pope/SpaRTA using double dot products.
     I1 = S : S = tr(S^2)
     I2 = W : W = tr(W^2)
 
     Args:
         Sij (np.ndarray): Strain rate tensor field
         Wij (np.ndarray): Rotation rate tensor field
-        omega (np.ndarray): omega tensor field
     """
     # Uses tensor operator for double dot product (trace of product)
     I1 = ops.double_dot(Sij, Sij)
     I2 = ops.double_dot(Wij, Wij)
-
-    # NORMALIZED
-    I1 = I1/omega[:, None, None]
-    I2 = I2/omega[:, None, None]
 
     return I1, I2
