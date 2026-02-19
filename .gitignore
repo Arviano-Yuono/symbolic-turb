@@ -1,5 +1,9 @@
-outputs/
-tests
+output/
+tests/*
+!tests/sparta_scaling_python_stats.py
+!tests/sparta_scaling_openfoam_stats.py
+!tests/sparta_scaling_compare_bulk.py
+!tests/sparta_scaling_validate_bulk.py
 NOTES.md
 TODO.md
 DATASET.md
@@ -8,6 +12,7 @@ walkthrough.md
 dataset
 .pytest_cache
 lnInclude
+recovery
 
 # OpenFOAM generated build artifacts
 customOpenFOAM/**/Make/linux64*/
